@@ -8,6 +8,7 @@ class Bot:
         self.config = config
 
         self.session = None 
+        self.checkout_url = ""
 
     def start(self):
         self.session = requests.session()
@@ -16,38 +17,54 @@ class Bot:
         self.start_session()
 
         shop_id = self.add_to_cart().headers['x-shopid']
+        if shop_id == "":
+            raise RuntimError('[ERR] shop_id not found. cart_response:\n', cart)
 
         checkout = self.checkout()
+        
+        checkout_token = checkout.cookies['tracked_start_checkout']
 
-        contact_info = self.contact_info(checkout, shop_id)
+        if checkout_token == "":
+            raise RuntimError('[ERR] checkout_token not found. checkout_response:\n', checkout)
 
-        shipping = self.shipping(contact_info, shop_id)
+        self.checkout_url = self.url + '/' + shop_id + '/checkouts/' + checkout_token
+
+        contact_info = self.contact_info(checkout)
+
+        shipping = self.shipping(contact_info)
+
+        print(shipping.text)
+        print(shipping)
+
 
     def start_session(self):
+        print('starting session.')
         return self.session.get(self.url + '/cart.js')
 
     def add_to_cart(self):
+        print('adding product_id ' + self.product_id + ' to cart.')
         return self.session.post(self.url + '/cart/add.js', data={ 'form_type': 'product', 'id': self.product_id }) # add product to cart
 
     def checkout(self):
+        print('initiating checkout.')
         return self.session.post(self.url + '/cart', data={ 'checkout': 'Check out' })
 
-    def start_pay_session(self, checkout_token):
+    def start_pay_session(self):
         pay_session_data = {
-            'checkout_token': checkout_token,
+            'checkout_token': self.checkout_token,
             'email': self.config.email,
             'origin': "modal",
-            'shopify_domain': self.urls.shopify_domain #"cannon-keys.myshopify.com"
+            'shopify_domain': self.config['shopify_domain']
         }
 
         return self.session.post(self.urls.pay_session_url, data=pay_session_data)
 
-    def contact_info(self, checkout, shop_id):
+    def contact_info(self, checkout):
         soup = BeautifulSoup(checkout.text, 'html.parser')
         forms = soup.find_all('form')
 
         found = None
-        for i, form in enumerate(forms):
+        for form in forms:
             if form.get('data-customer-information-form') is not None:
                 found = form
 
@@ -87,16 +104,14 @@ class Bot:
           "checkout[client_details][browser_tz]": "600"
         }
 
-        contact_info_url = self.url + '/' + shop_id + '/checkouts/' + checkout.cookies['tracked_start_checkout']
+        return self.session.post(self.checkout_url, data=formData)
 
-        return self.session.post(contact_info_url, data=formData)
-
-    def shipping(self, contact_info, shop_id):
+    def shipping(self, contact_info):
         soup = BeautifulSoup(contact_info.text, 'html.parser')
         forms = soup.find_all('form')
 
         found = None
-        for i, form in enumerate(forms):
+        for form in forms:
             if form.get('data-shipping-method-form') is not None:
                 found = form
                 break
@@ -108,5 +123,13 @@ class Bot:
                 authenticity_token = input.get('value')
                 break
 
-        print('found')
-        print(authenticity_token)
+        formData = {
+            '_method': 'patch',
+            'authenticity_token': authenticity_token,
+            'previous_step': 'shipping_method',
+            'step': 'payment_method',
+            'checkout[shipping_rate][id]': 'usps-Priority-16.46'
+        }
+
+        return self.session.post(self.checkout_url, data=formData)
+
